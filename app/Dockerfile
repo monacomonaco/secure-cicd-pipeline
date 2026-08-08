@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---- builder ---------------------------------------------------------------
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 WORKDIR /build
 COPY requirements.txt .
 # The base image's bundled pip/setuptools lag behind and have had fixed
@@ -24,7 +24,7 @@ RUN pip install --no-cache-dir --upgrade "pip>=26.1.2" "setuptools>=83.0.0" && \
     pip install --no-cache-dir --user -r requirements.txt
 
 # ---- runtime ----------------------------------------------------------------
-FROM python:3.12-slim
+FROM python:3.14-slim
 LABEL org.opencontainers.image.source="https://github.com/monacomonaco/secure-cicd-pipeline" \
       org.opencontainers.image.description="Trivial Flask API used to demo a secure CI/CD pipeline"
 
