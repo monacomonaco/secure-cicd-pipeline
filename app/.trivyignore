@@ -1,0 +1,39 @@
+# Every entry here is a deliberate, documented exception — not a blanket
+# suppression. Each one names why it can't be fixed by a normal dependency
+# bump in this repo, and what would make it revisit-able.
+
+# GHSA-6v7p-g79w-8964: msgpack HIGH severity, installed 1.1.2, fixed 1.2.1.
+# This is pip's own vendored copy (pip/_vendor/msgpack) shipped inside the
+# pip package itself, not an independently pip-installable top-level
+# dependency of this app — `pip install --upgrade msgpack` doesn't touch
+# it. Confirmed as of pip 26.2.1 (the newest release on PyPI at the time
+# this was added) that upstream still vendors the unpatched copy; pip's
+# own `main` branch has already bumped the vendored version to 1.2.1, so
+# this should resolve itself on pip's next release. Revisit by removing
+# this line and confirming Trivy comes back clean.
+GHSA-6v7p-g79w-8964
+
+# CVE-2025-47273 / CVE-2026-59890: setuptools HIGH+MEDIUM, both reported
+# against "Installed Version: 70.3.0" — a version that is not actually in
+# this image. The Dockerfile explicitly upgrades to setuptools>=83.0.0 and
+# deletes any stale dist-info left behind by the base image; this was
+# verified three separate ways before concluding it's a Trivy-side bug
+# rather than a real finding:
+#   1. A debug build step ran an unrestricted filesystem search
+#      (no path/mount restrictions) for anything setuptools-related —
+#      the only matches were setuptools-83.0.0.dist-info and the package
+#      itself. No 70.3.0 anywhere.
+#   2. `pip list` inside the built image reports only `setuptools 83.0.0`.
+#   3. Trivy's own `--list-all-pkgs` package inventory correctly lists
+#      setuptools-83.0.0.dist-info/METADATA — but its separate
+#      vulnerability-matching table still cross-references the same
+#      package against 70.3.0. That's an internal inconsistency between
+#      Trivy's detection and matching logic, not a real installed
+#      version, and it reproduces identically on both the action's
+#      default Trivy binary (v0.70.0) and the latest release (v0.73.0)
+#      at the time this was added.
+# Revisit periodically by removing these two lines and confirming Trivy
+# still reports them cleanly resolved (or file/check for an upstream
+# aquasecurity/trivy issue if it still doesn't).
+CVE-2025-47273
+CVE-2026-59890

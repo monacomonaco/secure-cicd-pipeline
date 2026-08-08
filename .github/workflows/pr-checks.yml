@@ -1,0 +1,125 @@
+name: PR checks
+
+# Every gate in this file runs with ZERO cloud credentials — no AWS OIDC
+# role is assumed here, on purpose. A PR (including one from a fork) can
+# never exfiltrate or abuse AWS access just by existing. See SECURITY.md,
+# "Trust boundaries", for why that split matters.
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write # for SARIF upload to code scanning
+  pull-requests: read
+
+concurrency:
+  group: pr-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r app/requirements-dev.txt
+      # Run from inside app/ so `from app import app` in test_app.py resolves
+      # — pytest's rootdir-based sys.path insertion doesn't reach across
+      # from the repo root into app/ otherwise (ModuleNotFoundError: app).
+      - run: cd app && pytest tests -v
+
+  sast-semgrep:
+    name: SAST (Semgrep)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Semgrep
+        run: |
+          pip install semgrep
+          semgrep scan \
+            --config auto \
+            --error \
+            --sarif --output semgrep.sarif \
+            app/
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+  secrets-gitleaks:
+    name: Secrets scan (Gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # gitleaks needs full history, not just the merge commit
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITLEAKS_LICENSE not required for the OSS scan mode used here.
+
+  iac-scan:
+    name: IaC scan (Checkov)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Checkov
+        run: |
+          pip install checkov
+          checkov -d infra/terraform \
+            --framework terraform \
+            --hard-fail-on HIGH,CRITICAL \
+            --soft-fail-on LOW,MEDIUM \
+            --output cli --output sarif \
+            --output-file-path console,checkov-results.sarif
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: checkov-results.sarif
+          category: checkov
+
+  terraform-validate:
+    name: Terraform fmt/validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.0"
+      - run: terraform -chdir=infra/terraform fmt -check -recursive
+      - run: terraform -chdir=infra/terraform init -backend=false
+      - run: terraform -chdir=infra/terraform validate
+
+  container-scan:
+    name: Container scan (Trivy, PR build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image (not pushed)
+        run: docker build -t pr-build:${{ github.sha }} app/
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: pr-build:${{ github.sha }}
+          trivyignores: app/.trivyignore
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1" # fail the job — this is the gate, not just a report
+          cache: false # trivy-action's date-keyed cache mixes DB + per-layer analysis; keep this off, see app/.trivyignore for the story
+          version: v0.73.0 # current release, not the action's v0.70.0 default
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy

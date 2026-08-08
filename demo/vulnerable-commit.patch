@@ -1,0 +1,53 @@
+diff --git a/app/app.py b/app/app.py
+index 8b43b74..9184a91 100644
+--- a/app/app.py
++++ b/app/app.py
+@@ -6,13 +6,17 @@ to build, scan, sign, and deploy. All the interesting work happens in
+ infra/terraform, k8s/, and .github/workflows/.
+ """
+ import os
++import subprocess
+ 
+-from flask import Flask, jsonify
++from flask import Flask, jsonify, request
+ 
+ app = Flask(__name__)
+ 
+ APP_VERSION = os.environ.get("APP_VERSION", "dev")
+ 
++# TODO: move to env before merging
++AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE"
++
+ 
+ @app.route("/")
+ def index():
+@@ -30,6 +34,14 @@ def version():
+     return jsonify(version=APP_VERSION)
+ 
+ 
++@app.route("/ping")
++def ping():
++    """Convenience endpoint for on-call to sanity-check connectivity."""
++    host = request.args.get("host", "")
++    output = subprocess.check_output(f"ping -c 1 {host}", shell=True)
++    return output
++
++
+ if __name__ == "__main__":
+     # Dev server only — gunicorn is the production entrypoint (see Dockerfile).
+     app.run(host="0.0.0.0", port=8080)
+diff --git a/infra/terraform/eks.tf b/infra/terraform/eks.tf
+index 445cfcf..2a57954 100644
+--- a/infra/terraform/eks.tf
++++ b/infra/terraform/eks.tf
+@@ -22,8 +22,8 @@ module "eks" {
+   # Nodes and control plane talk over the private endpoint; public access is
+   # off unless explicitly enabled (see variables.tf).
+   cluster_endpoint_private_access      = true
+-  cluster_endpoint_public_access       = var.cluster_endpoint_public_access
+-  cluster_endpoint_public_access_cidrs = var.cluster_endpoint_public_access_cidrs
++  cluster_endpoint_public_access       = true
++  cluster_endpoint_public_access_cidrs = ["0.0.0.0/0"] # opened for kubectl access while debugging, will lock down later
+ 
+   # Encrypt Kubernetes Secrets at rest with a customer-managed KMS key
+   # (envelope encryption on top of the etcd volume encryption EKS already

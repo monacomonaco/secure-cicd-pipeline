@@ -1,0 +1,91 @@
+name: Terraform plan & apply
+
+# Deliberately does NOT run on pull_request. `terraform plan` needs real AWS
+# read access, and granting that to arbitrary PRs (including from forks) is
+# how you get a PR that plans its way into leaking account details or, with
+# a compromised action dependency, worse. Infra PRs are still gated —
+# pr-checks.yml runs Checkov + `terraform validate` with zero cloud
+# credentials on every PR — they just don't get a live plan diff in the
+# PR itself. See SECURITY.md, "the CI-as-root problem", for the tradeoff.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "infra/terraform/**"
+      - ".github/workflows/terraform.yml"
+
+permissions:
+  contents: read
+  id-token: write
+  security-events: write
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+jobs:
+  iac-scan:
+    name: IaC scan (Checkov, re-verified at apply time)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          pip install checkov
+          checkov -d infra/terraform \
+            --framework terraform \
+            --hard-fail-on HIGH,CRITICAL \
+            --soft-fail-on LOW,MEDIUM
+
+  plan:
+    name: terraform plan
+    needs: iac-scan
+    runs-on: ubuntu-latest
+    outputs:
+      plan_exitcode: ${{ steps.plan.outputs.exitcode }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.0"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - run: terraform -chdir=infra/terraform init
+      - id: plan
+        run: terraform -chdir=infra/terraform plan -out=tfplan -detailed-exitcode
+        continue-on-error: true # exit code 2 = valid plan with changes; not a failure
+      - name: Fail on real errors
+        if: steps.plan.outputs.exitcode == '1'
+        run: exit 1
+      - uses: actions/upload-artifact@v4
+        if: steps.plan.outputs.exitcode == '2'
+        with:
+          name: tfplan
+          path: infra/terraform/tfplan
+          retention-days: 5
+
+  apply:
+    name: terraform apply
+    needs: plan
+    if: needs.plan.outputs.plan_exitcode == '2'
+    runs-on: ubuntu-latest
+    # Requires manual approval: configure the "infra-apply" GitHub
+    # Environment with required reviewers in repo Settings > Environments.
+    # This is the human gate on top of the automated Checkov gate above —
+    # a passing scan means "not obviously broken," not "pre-approved."
+    environment: infra-apply
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.0"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - run: terraform -chdir=infra/terraform init
+      - uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: infra/terraform
+      - run: terraform -chdir=infra/terraform apply tfplan

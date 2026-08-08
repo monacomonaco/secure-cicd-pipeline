@@ -1,0 +1,56 @@
+# Custom Falco rules layered on top of the stock ruleset, scoped to this
+# app. A Flask/gunicorn process has a small, known set of legitimate
+# behaviors — anything outside that set is either a bug or an intrusion.
+
+- list: flask_api_allowed_processes
+  items: [gunicorn, python3]
+
+- macro: flask_api_container
+  condition: >
+    k8s.ns.name = "secure-demo" and k8s.pod.label.app = "flask-api"
+
+- rule: Shell Spawned in Flask API Container
+  desc: >
+    A shell (or any interactive/exec-style process) was spawned inside the
+    flask-api container. This app never legitimately shells out — this is
+    the signature of a successful RCE (e.g. the injection bug demoed in
+    demo/vulnerable-commit.patch) being actively exploited, or an operator
+    debugging with kubectl exec.
+  condition: >
+    spawned_process and flask_api_container and
+    not proc.name in (flask_api_allowed_processes) and
+    (proc.name in (shell_binaries) or proc.name in (sh, bash, ash))
+  output: >
+    Shell spawned in flask-api container (user=%user.name command=%proc.cmdline
+    parent=%proc.pname pod=%k8s.pod.name container=%container.id)
+  priority: CRITICAL
+  tags: [process, mitre_execution]
+
+- rule: Unexpected Outbound Connection from Flask API
+  desc: >
+    The app only ever receives inbound HTTP on 8080; it has no legitimate
+    reason to initiate outbound connections. Flags C2 callbacks, crypto
+    miner check-ins, or data exfiltration from a compromised container.
+  condition: >
+    outbound and flask_api_container and
+    not fd.sport in (8080)
+  output: >
+    Unexpected outbound connection from flask-api (command=%proc.cmdline
+    connection=%fd.name pod=%k8s.pod.name)
+  priority: WARNING
+  tags: [network, mitre_exfiltration, mitre_command_and_control]
+
+- rule: Write Below Root Filesystem in Flask API
+  desc: >
+    readOnlyRootFilesystem is enforced by both the Deployment spec and a
+    Kyverno policy, so this should be structurally impossible — a hit here
+    means one of those controls was bypassed or misconfigured, which is
+    itself worth alerting on.
+  condition: >
+    open_write and flask_api_container and
+    not fd.name startswith /tmp
+  output: >
+    Unexpected write outside /tmp in flask-api (file=%fd.name command=%proc.cmdline
+    pod=%k8s.pod.name)
+  priority: CRITICAL
+  tags: [filesystem, mitre_persistence]

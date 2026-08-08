@@ -1,0 +1,146 @@
+name: Build, scan, sign, deploy
+
+# Runs only on pushes to main — i.e. only after a PR has already passed
+# every gate in pr-checks.yml and been reviewed/merged. This workflow is
+# the only one trusted with the deploy OIDC role (see oidc-github.tf,
+# github_sub_main), and that role is scoped to exactly this ref.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "k8s/**"
+      - ".github/workflows/cd.yml"
+
+permissions:
+  contents: read
+  id-token: write # required to mint the OIDC token cosign + AWS both use
+  security-events: write
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'secure-cicd-demo/flask-api' }}
+  CLUSTER_NAME: ${{ vars.CLUSTER_NAME || 'secure-cicd-demo' }}
+
+jobs:
+  build-scan-sign:
+    name: Build, scan, SBOM, sign
+    runs-on: ubuntu-latest
+    outputs:
+      image_digest_ref: ${{ steps.push.outputs.image_digest_ref }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC, no static keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build image (local only — not pushed yet)
+        run: |
+          docker build \
+            -t "${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}" \
+            app/
+
+      # Gate #3: fail the pipeline before anything vulnerable ever reaches
+      # the registry, let alone the cluster.
+      - name: Trivy scan (blocking)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: "${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}"
+          trivyignores: app/.trivyignore
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          # See pr-checks.yml's container-scan job for the full story —
+          # v0.70.0 (this action's default) had an internal inconsistency
+          # between its package inventory and vulnerability matching for
+          # setuptools; pinned to the current release instead.
+          cache: false
+          version: v0.73.0
+      - name: Upload Trivy SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-release
+
+      - name: Push image
+        id: push
+        run: |
+          IMAGE="${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}"
+          docker push "$IMAGE"
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE")
+          echo "image_digest_ref=$DIGEST" >> "$GITHUB_OUTPUT"
+
+      # Gate #4a: SBOM. Generated from the pushed image so it reflects
+      # exactly what's in the registry, not just what's on the build host.
+      - name: Generate SBOM (Syft, CycloneDX)
+        uses: anchore/sbom-action@v0.17.2
+        with:
+          image: ${{ steps.push.outputs.image_digest_ref }}
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+          upload-artifact: true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.7.0
+
+      # Gate #4b: keyless signing via GitHub's own OIDC identity — no
+      # signing key to generate, rotate, or leak. The signature is
+      # verifiable proof that "the cd.yml workflow, on this exact commit,
+      # in this exact repo, produced this exact image digest" — nothing
+      # more and nothing less.
+      - name: Sign image (keyless)
+        run: cosign sign --yes "${{ steps.push.outputs.image_digest_ref }}"
+
+      - name: Attest SBOM to image
+        run: |
+          cosign attest --yes \
+            --predicate sbom.cdx.json \
+            --type cyclonedx \
+            "${{ steps.push.outputs.image_digest_ref }}"
+
+  deploy:
+    name: Deploy to EKS
+    needs: build-scan-sign
+    runs-on: ubuntu-latest
+    environment: production # optionally add required reviewers in repo settings
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC, no static keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name "${{ env.CLUSTER_NAME }}" --region "${{ env.AWS_REGION }}"
+
+      - name: Pin manifest to the signed digest
+        run: |
+          IMAGE="${{ needs.build-scan-sign.outputs.image_digest_ref }}"
+          sed -i "s#<ECR_REPOSITORY_URL>@sha256:[a-f0-9]*#${IMAGE}#" k8s/deployment.yaml
+          grep -q "$IMAGE" k8s/deployment.yaml # fail loudly if the substitution silently no-op'd
+
+      - name: Apply manifests
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/deployment.yaml
+          kubectl apply -f k8s/service.yaml
+
+      # If Kyverno rejects the Pod (signature doesn't verify, wrong
+      # workflow identity, missing SBOM attestation), the Deployment's
+      # ReplicaSet will have zero ready pods and this step times out and
+      # fails the job — the admission decision is what's actually
+      # enforcing "unsigned images never run," not this workflow's say-so.
+      - name: Wait for rollout
+        run: kubectl rollout status deployment/flask-api -n secure-demo --timeout=120s

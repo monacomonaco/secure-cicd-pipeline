@@ -1,0 +1,54 @@
+# This is the policy that makes signing mean something. Without it, cosign
+# signing is just an artifact nobody checks — a pod can run any image
+# whether or not it was ever signed. This policy makes the admission
+# controller itself verify the Sigstore signature (keyless, via GitHub's
+# OIDC identity) before the pod is allowed to schedule.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-image-signature
+  annotations:
+    policies.kyverno.io/title: Require Signed Images
+    policies.kyverno.io/category: Supply Chain Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/description: >-
+      Rejects any Pod in the secure-demo namespace whose image is not
+      signed by the cd.yml GitHub Actions workflow's keyless Sigstore
+      identity, and requires a CycloneDX SBOM attestation to be attached.
+spec:
+  webhookTimeoutSeconds: 30
+  failurePolicy: Fail
+  validationFailureAction: Enforce # Audit while first rolling this out, then flip to Enforce
+  background: false
+  rules:
+    - name: verify-signature
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+              namespaces: ["secure-demo"]
+      verifyImages:
+        - imageReferences:
+            - "<ECR_REPOSITORY_URL>*"
+          mutateDigest: true
+          required: true
+          attestors:
+            - count: 1
+              entries:
+                - keyless:
+                    issuer: "https://token.actions.githubusercontent.com"
+                    # Must match the workflow file + ref that is allowed to
+                    # produce a deployable signature. Update the org/repo.
+                    subject: "https://github.com/monacomonaco/secure-cicd-pipeline/.github/workflows/cd.yml@refs/heads/main"
+                    rekor:
+                      url: https://rekor.sigstore.dev
+          attestations:
+            - predicateType: https://cyclonedx.org/bom
+              attestors:
+                - count: 1
+                  entries:
+                    - keyless:
+                        issuer: "https://token.actions.githubusercontent.com"
+                        subject: "https://github.com/monacomonaco/secure-cicd-pipeline/.github/workflows/cd.yml@refs/heads/main"
+                        rekor:
+                          url: https://rekor.sigstore.dev

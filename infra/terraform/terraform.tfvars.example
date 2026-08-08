@@ -1,0 +1,13 @@
+# Copy to terraform.tfvars and fill in your own values.
+# terraform.tfvars is gitignored — never commit real account-specific values
+# you consider sensitive (this repo's defaults are safe placeholders).
+
+aws_region   = "us-east-1"
+environment  = "demo"
+cluster_name = "secure-cicd-demo"
+
+github_repo = "monacomonaco/secure-cicd-pipeline"
+
+# Leave public access off unless you need kubectl from outside the VPC.
+# cluster_endpoint_public_access       = true
+# cluster_endpoint_public_access_cidrs = ["203.0.113.4/32"]

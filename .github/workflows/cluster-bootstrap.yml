@@ -1,0 +1,59 @@
+name: Cluster bootstrap (Kyverno + Falco)
+
+# Manually triggered, not run on every commit — these are cluster add-ons,
+# not app deploys. Run once after `terraform apply` creates the cluster,
+# and again any time the policies/rules under k8s/kyverno or falco/ change.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "bootstrap" to confirm you want to (re)install cluster add-ons'
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  CLUSTER_NAME: ${{ vars.CLUSTER_NAME || 'secure-cicd-demo' }}
+
+jobs:
+  bootstrap:
+    if: github.event.inputs.confirm == 'bootstrap'
+    runs-on: ubuntu-latest
+    environment: infra-apply # same human gate as terraform apply — this changes cluster-wide policy
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - run: aws eks update-kubeconfig --name "${{ env.CLUSTER_NAME }}" --region "${{ env.AWS_REGION }}"
+
+      - name: Install Kyverno
+        run: |
+          helm repo add kyverno https://kyverno.github.io/kyverno/
+          helm repo update
+          helm upgrade --install kyverno kyverno/kyverno \
+            --namespace kyverno --create-namespace \
+            --wait
+
+      - name: Apply Kyverno policies
+        run: |
+          sed "s#<ECR_REPOSITORY_URL>#${{ vars.ECR_REPOSITORY_URL }}#g; s#YOUR_GH_ORG/secure-cicd-pipeline#${{ github.repository }}#g" \
+            k8s/kyverno/require-image-signature.yaml | kubectl apply -f -
+          kubectl apply -f k8s/kyverno/require-non-root.yaml
+
+      - name: Install Falco
+        run: |
+          helm repo add falcosecurity https://falcosecurity.github.io/charts
+          helm repo update
+          helm upgrade --install falco falcosecurity/falco \
+            --namespace falco --create-namespace \
+            -f falco/values.yaml \
+            --set-file falco.rules.customRules."custom-rules\.yaml"=falco/rules/custom-rules.yaml \
+            --set falcosidekick.config.slack.webhookurl="${{ secrets.SLACK_WEBHOOK_URL }}" \
+            --wait

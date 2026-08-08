@@ -1,0 +1,35 @@
+# Redundant with the namespace's `pod-security.kubernetes.io/enforce:
+# restricted` label (k8s/namespace.yaml) — kept as an explicit Kyverno
+# policy anyway, so a namespace-label misconfig or a future namespace
+# doesn't silently lose this control, and so it shows up in Kyverno's own
+# policy reports/audit trail alongside the signature policy.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-non-root-and-drop-capabilities
+  annotations:
+    policies.kyverno.io/title: Require Non-Root, Drop Capabilities
+    policies.kyverno.io/category: Pod Security
+    policies.kyverno.io/severity: medium
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-run-as-non-root
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+              namespaces: ["secure-demo"]
+      validate:
+        message: "Containers must set securityContext.runAsNonRoot: true and drop all capabilities."
+        pattern:
+          spec:
+            =(securityContext):
+              =(runAsNonRoot): true
+            containers:
+              - securityContext:
+                  runAsNonRoot: true
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop: ["ALL"]

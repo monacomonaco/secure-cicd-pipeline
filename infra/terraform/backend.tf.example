@@ -1,0 +1,17 @@
+# Copy this file to backend.tf and fill in your own bucket/table.
+# Do NOT commit backend.tf with real values if the bucket name itself is
+# sensitive — for a portfolio project it's fine to commit.
+#
+# Bootstrap the bucket + lock table once, by hand, *before* `terraform init`
+# (chicken-and-egg: state storage can't be created by the state it stores).
+# See scripts/bootstrap-backend.sh for the one-time CLI commands.
+
+terraform {
+  backend "s3" {
+    bucket         = "YOUR_ORG-tfstate-secure-cicd-demo"
+    key            = "secure-cicd-pipeline/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "terraform-locks"
+    encrypt        = true
+  }
+}

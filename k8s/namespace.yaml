@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: secure-demo
+  labels:
+    # Belt-and-suspenders alongside the Kyverno policies in k8s/kyverno/:
+    # built-in Kubernetes Pod Security Admission also enforces the
+    # "restricted" profile at the namespace level.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest

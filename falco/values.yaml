@@ -1,0 +1,49 @@
+# Helm values for the falcosecurity/falco chart.
+# Install (one-time, see demo README / cluster-bootstrap workflow):
+#
+#   helm repo add falcosecurity https://falcosecurity.github.io/charts
+#   helm install falco falcosecurity/falco \
+#     --namespace falco --create-namespace \
+#     -f falco/values.yaml \
+#     -f falco/rules/custom-rules.yaml \
+#     --set falcosidekick.config.slack.webhookurl="$SLACK_WEBHOOK_URL"
+#
+# Runtime detection is out-of-band from the CI/CD pipeline on purpose: it
+# catches what static scanning and signature enforcement can't — behavior
+# that only exists once a container is actually running (a shell spawned
+# inside a "trivial API" pod, an outbound connection to a crypto-mining
+# pool, a process reading /etc/shadow). See SECURITY.md, "Runtime".
+
+driver:
+  kind: modern_ebpf # no kernel module to build/maintain
+
+tty: false
+
+falcosidekick:
+  enabled: true
+  replicaCount: 1
+  config:
+    slack:
+      # Populated via --set at install time from a cluster secret, not
+      # committed here. Minimal/muted format so Slack doesn't get spammed —
+      # see falco/rules/custom-rules.yaml for the priority threshold.
+      minimumpriority: warning
+
+# Scope Falco's default ruleset down to what's actionable for a 2-service
+# demo cluster, then layer custom-rules.yaml on top with app-specific rules.
+falco:
+  rules_file:
+    - /etc/falco/falco_rules.yaml
+    - /etc/falco/rules.d
+  json_output: true
+  json_include_output_property: true
+  priority: warning
+  buffered_outputs: false
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
