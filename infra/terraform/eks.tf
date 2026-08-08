@@ -6,7 +6,7 @@
 module "eks" {
   #checkov:skip=CKV_TF_1:Registry module (not git-sourced) — a commit hash doesn't apply here; version = "~> 20.24" is the registry-equivalent pin, and CKV_TF_2 (which does apply) passes.
   source  = "terraform-aws-modules/eks/aws"
-  version = "~> 20.24"
+  version = "~> 21.24"
 
   cluster_name    = var.cluster_name
   cluster_version = var.cluster_version
