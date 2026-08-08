@@ -57,7 +57,7 @@ jobs:
       - name: Fail on real errors
         if: steps.plan.outputs.exitcode == '1'
         run: exit 1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: steps.plan.outputs.exitcode == '2'
         with:
           name: tfplan
