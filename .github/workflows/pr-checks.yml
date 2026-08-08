@@ -48,7 +48,7 @@ jobs:
             app/
       - name: Upload SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: semgrep.sarif
           category: semgrep
@@ -81,7 +81,7 @@ jobs:
             --output-file-path console,checkov-results.sarif
       - name: Upload SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: checkov-results.sarif
           category: checkov
@@ -119,7 +119,7 @@ jobs:
           version: v0.73.0 # current release, not the action's v0.70.0 default
       - name: Upload SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-results.sarif
           category: trivy
