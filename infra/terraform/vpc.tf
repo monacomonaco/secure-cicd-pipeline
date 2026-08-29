@@ -12,7 +12,7 @@ data "aws_availability_zones" "available" {
 module "vpc" {
   #checkov:skip=CKV_TF_1:Registry module (not git-sourced) — a commit hash doesn't apply here; version = "~> 5.8" is the registry-equivalent pin, and CKV_TF_2 (which does apply) passes.
   source  = "terraform-aws-modules/vpc/aws"
-  version = "~> 5.8"
+  version = "~> 6.7"
 
   name = "${var.cluster_name}-vpc"
   cidr = var.vpc_cidr
